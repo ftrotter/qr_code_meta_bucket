@@ -3,7 +3,7 @@
 **Software Requirements Specification**
 **Status:** Exploratory / requirements gathering  
 **Clients:** iPhone and Macintosh applications (Swift / SwiftUI), plus a durable web interface
-**Proposed backend:** Python (FastAPI), PostgreSQL  
+**Backend:** Laravel (PHP), PostgreSQL
 **Selected URL shortener:** Shlink (PHP), initially on `ft1.us` or another owner-controlled domain  
 **Storage targets:** Google Drive, Dropbox, Amazon S3; extensible to other providers
 **Collaborative metadata targets:** Google Drive documents, Microsoft Office documents, Etherpad, and other URL-addressable resources
@@ -33,6 +33,8 @@ Long-term survival is a design goal, not a guarantee that domains, providers, or
 13. **Cross-device administration:** The same account, bucket, upload, provider-integration, mirroring, metadata, link, and Shlink-management capabilities must be available from iPhone, Macintosh, and the responsive web interface, subject to platform capabilities and the user's authorization.
 14. **Provider-native access control:** Google Drive, Dropbox, S3, Etherpad, and other underlying systems remain responsible for authenticating viewers and enforcing their own sharing policies. This system links to resources and reports observed accessibility; it does not reproduce or override provider permissions.
 15. **Copying over restriction:** Keep application-level access control minimal while maximizing verified replication, provider-to-provider copying, restoration, and migration. Long-term survival and portability take priority over keeping archival copies scarce.
+16. **Locally hosted JavaScript:** Every JavaScript file required by a project-owned web page must be bundled with and served by the deployed application or an owner-controlled static origin. Stability and reproducibility take priority over frontend download performance.
+17. **Conventional hosting:** Prefer a small, understandable, replaceable server using Apache and established PHP deployment patterns over serverless, orchestration, or performance-driven infrastructure complexity.
 
 ### 1.2 Non-goals
 
@@ -413,7 +415,25 @@ The iPhone client should use native QR scanning (VisionKit or equivalent) and na
 
 Implement a responsive web interface against the same backend capabilities. It must work in current standards-based browsers without the native app and must not require a Shlink administrative credential in the browser. Public views should remain usable without authentication; authenticated contribution and management views shall enforce the same authorization rules as the native app.
 
-### 10.2 Main workflow
+### 10.2 Locally hosted web assets
+
+Project-owned pages must not load JavaScript from public CDNs, package CDNs, tag managers, analytics loaders, remote widget hosts, or other third-party runtime locations. This includes framework code, helper libraries, polyfills, geolocation code, upload code, QR code libraries, analytics, and administrative-interface scripts.
+
+All required JavaScript dependencies shall be:
+
+- Version-pinned in the repository's package lockfile.
+- Downloaded only during a controlled development or build process.
+- Bundled into versioned static assets during the release build.
+- Deployed with Laravel and served from the application origin or another owner-controlled origin included in backup and restoration procedures.
+- Usable after public package registries and third-party CDNs are unavailable.
+
+The production application must not install packages or download executable browser code at request time. Avoid inline scripts and dynamic evaluation so a restrictive Content Security Policy can use `script-src 'self'` or an equivalently narrow owner-controlled allowlist without `unsafe-eval`. If an inline bootstrap value is unavoidable, use a nonce or external generated file rather than weakening the general policy.
+
+Server-rendered public bucket pages should remain readable and navigable when JavaScript is disabled. JavaScript may progressively add geolocation, upload progress, QR scanning, and interactive administration. Features that inherently require browser APIs may require JavaScript, but their script files must still be locally hosted and failure must produce a clear non-JavaScript alternative or explanation.
+
+Following a metadata, storage-provider, authentication-provider, or arbitrary display link may open an external service that runs its own JavaScript. That external page is outside this hosting rule. No external provider's JavaScript may be embedded as a requirement for rendering or administering this project's own pages.
+
+### 10.3 Main workflow
 
 **Scan / enter → Resolve identifier → Show bucket or offer creation → Browse publicly → Authenticate when contributing → Upload or manage.**
 
@@ -433,7 +453,7 @@ The native iPhone and Macintosh applications and corresponding authenticated web
 - Open the primary Google Drive document, Microsoft Office document, Etherpad pad, or equivalent metadata URL from the bucket landing page.
 - Let users revisit the same bucket by rescanning or reentering the same identifier.
 
-### 10.3 Camera and browser operation
+### 10.4 Camera and browser operation
 
 People without the app shall be able to scan managed QR codes using a standard iPhone or Android camera and reach the bucket's responsive web interface through its Shlink URL. The default web destination should expose the bucket's public presentation and offer sign-in when the visitor has contribution or management rights. It must not be a dead-end marketing page or merely an instruction to install the app.
 
@@ -441,13 +461,13 @@ The web interface may ask the visitor for precise location permission after the 
 
 Universal Links or Android App Links may route a managed URL into an installed native app, but the same URL must continue to work in a browser. Browser operation is a permanent, first-class continuity mode.
 
-### 10.4 Macintosh operation
+### 10.5 Macintosh operation
 
 A Macintosh user shall be able to use either the native macOS application or a standards-based Mac browser. Both paths shall support browsing, additive uploads, batch uploads, provider connections, replication-target management, archive import and mirroring, metadata and display-link management, manifest export, and authorized Shlink administration. Native iPhone ownership or access must not be required to initialize or administer an archive from a Mac.
 
 The native Macintosh application should support drag-and-drop and multi-file or folder selection for large archival imports. Long-running fan-out and mirroring jobs execute as durable backend jobs, so closing or sleeping the Mac does not discard server-accepted work. The Mac client shall reconnect and display current job state when reopened.
 
-### 10.5 Native-app disappearance
+### 10.6 Native-app disappearance
 
 The deployed web system must retain enough functionality to operate the archive if all native clients disappear. At minimum, a browser user with appropriate authorization must be able to browse buckets, follow and download resources, upload additive resources, connect providers, manage replication targets, run and resume import/mirror jobs, manage the primary metadata URL and display links, configure location rules, manage contributors, export manifests, and update authorized Shlink destinations. Operators must be able to restore or migrate the web interface, API, database, and Shlink configuration from documented backups without rebuilding a native application.
 
@@ -460,7 +480,9 @@ The deployed web system must retain enough functionality to operate the archive 
 | iPhone client | Swift / SwiftUI |
 | Macintosh client | Native macOS Swift / SwiftUI application |
 | Web client | Responsive standards-based web interface, technology TBD |
-| API / orchestration | Python / FastAPI |
+| Web assets | Locally bundled, owner-hosted JavaScript with no runtime CDN dependency |
+| Web server | Apache HTTP Server using a conventional PHP/Apache deployment |
+| API / orchestration | Laravel / PHP |
 | Metadata database | PostgreSQL |
 | Short links | Shlink (PHP), via REST API |
 | Identity | OIDC plus email magic links / codes |
@@ -470,9 +492,10 @@ The deployed web system must retain enough functionality to operate the archive 
 | Primary metadata URLs | Google Drive documents, Microsoft Office documents, Etherpad, generic HTTPS URLs |
 | Contextual links | Arbitrary URLs with optional geofence presentation rules |
 | Bucket and management pages | Responsive web frontend, TBD |
-| Deployment | Docker Compose, proposed |
+| Initial hosting | Small Google Compute Engine VM |
+| Deployment | Docker Compose on one VM |
 
-FastAPI and PostgreSQL are recommended implementation choices, not yet final user-mandated requirements.
+Laravel/PHP and PostgreSQL are the selected backend implementation choices.
 
 ### 11.2 Entities
 
@@ -549,7 +572,30 @@ Document DNS/domain renewal, backup and restore, domain transfers, replacement l
 
 The system should support independent operators deploying their own instance and domain, rather than requiring all archives to be hosted by the original operator.
 
-**Proposed deployment package:** Docker Compose with Shlink, Python API, metadata database, complete responsive web interface, environment-based configuration, storage adapters, backup/export tooling, and operator documentation.
+### 13.1 Initial production deployment
+
+The initial hosted deployment should use one small Google Compute Engine virtual machine with a persistent SSD and static IP address. Run the application through Docker Compose using familiar, independently replaceable services:
+
+- Apache HTTP Server and PHP serving Laravel, using the standard PHP Apache container pattern rather than an Nginx-to-PHP-FPM proxy tier.
+- PostgreSQL for the initially small application database.
+- One or more Laravel queue-worker processes.
+- The Laravel scheduler.
+- An unmodified upstream Shlink deployment and its supported database arrangement.
+- Locally bundled JavaScript, CSS, images, fonts, and other project-owned web assets served by Apache.
+
+Apache is selected for operational familiarity and a direct, known-good PHP deployment. Expected request volume does not justify optimizing the initial architecture for maximum throughput. Do not add Nginx, Kubernetes, a service mesh, a CDN dependency, or separate autoscaling web tiers without a demonstrated operational requirement.
+
+The production image and Docker Compose configuration must be reproducible from source control. Application state shall use persistent storage, while database dumps, Shlink configuration, application configuration, manifests, and required locally hosted assets shall be backed up off the VM. At least one backup copy should be held outside the VM, and preferably outside the Google account or provider. Restoration onto a clean replacement VM must be documented and tested.
+
+### 13.2 Serverless position
+
+The initial system shall not use serverless hosting for Laravel, Shlink, PostgreSQL, queue workers, or transfer jobs. The workload includes continuously available redirects, ordinary PHP requests, scheduled work, durable queues, and potentially long-running provider-to-provider transfers. A single conventional VM is simpler to understand, back up, restore, self-host, and move to another provider.
+
+Keep service boundaries and configuration portable enough that components can be separated later if measured load, availability requirements, or operational experience justify it. Cloud Run, Cloud SQL, managed queues, Kubernetes, or similar services are future deployment options, not prerequisites or current design targets.
+
+### 13.3 Self-hosting package
+
+**Deployment package:** Docker Compose with Apache/PHP, Shlink, Laravel, PostgreSQL, queue workers, scheduler, complete responsive web interface, environment-based configuration, storage adapters, backup/export tooling, and operator documentation.
 
 Support a configurable registry/list of recognized Shlink instances in the iPhone and Macintosh applications. Define whether cross-instance bucket discovery or exchange is required in a later phase.
 
@@ -557,7 +603,7 @@ Support a configurable registry/list of recognized Shlink instances in the iPhon
 
 ### Phase 1 — Basic archive and linked metadata
 
-Shared Swift/SwiftUI iPhone and Macintosh clients; iPhone camera scanning; Macintosh camera scanning, QR-image import, and manual entry; responsive web interface; ordinary-camera QR resolution; arbitrary identifier lookup; Google sign-in plus universal email magic links; bucket creation; public landing page; authenticated web upload and management; one generic HTTPS metadata URL; arbitrary display links; direct or landing-page resolution; file upload with dot-separated collision naming; basic contributor invitation; Python API and database.
+Shared Swift/SwiftUI iPhone and Macintosh clients; iPhone camera scanning; Macintosh camera scanning, QR-image import, and manual entry; responsive web interface; ordinary-camera QR resolution; arbitrary identifier lookup; Google sign-in plus universal email magic links; bucket creation; public landing page; authenticated web upload and management; one generic HTTPS metadata URL; arbitrary display links; direct or landing-page resolution; file upload with dot-separated collision naming; basic contributor invitation; Laravel API and PostgreSQL database.
 
 ### Phase 2 — Managed links
 
@@ -625,6 +671,9 @@ The phases are proposed implementation sequencing, not final scope commitments.
 48. A multi-page text QR payload whose normalized value exceeds 255 characters produces a name no longer than 255 ASCII characters containing a readable prefix, `_sha256_`, and the complete lowercase SHA-256 digest of the exact original UTF-8 payload.
 49. Two different short payloads that normalize to the same readable name receive distinct hash-suffixed provider-space names without changing either exact identifier.
 50. The assigned derived name and naming-algorithm version survive export, restoration, software upgrades, provider fan-out, and provider-to-provider migration without being recalculated differently.
+51. A production browser session can render and operate every project-owned page without requesting JavaScript from a public CDN or third-party runtime host.
+52. Blocking all non-owner-controlled script origins does not prevent public bucket browsing, authentication initiation, administration, uploads, geolocation prompts, or transfer monitoring.
+53. Restoring the documented application backup restores every JavaScript asset required by the deployed web interface without downloading code from a package registry or CDN.
 
 ## 16. Open Decisions
 
