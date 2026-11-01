@@ -142,6 +142,142 @@ must never be used in automated tests.
 - Preserve portable container and backup boundaries so a later move to managed
   services or another host does not require redesigning the application.
 
+### 3.6 Environment configuration policy
+
+- Keep deploy-specific values, resource names, domains, and secret references
+  in the untracked `.env` file.
+- Commit `example.env` with safe example values and descriptions, but no working
+  credentials or private keys.
+- Keep the production hostname out of source code, Compose files, scripts, and
+  documentation examples. Read it from `DEPLOY_HOSTNAME` or `SHLINK_DOMAIN`.
+- Deployment scripts may load `.env` locally but must never copy the entire
+  development `.env` to the VM. Generate a least-privilege production
+  environment file containing only values required by deployed services.
+- Treat `.env`, service-account key files, generated SSH material, and local
+  deployment state as secrets or machine-local state and exclude them from Git.
+- Use Laravel configuration accessors rather than calling `env()` outside
+  configuration files, so production configuration caching remains reliable.
+
+### 3.7 Google Cloud authentication boundary
+
+`GOOGLE_API_KEY` may be present in `.env` for an application feature that calls
+a Google API which explicitly supports API keys. It is **not** sufficient to
+push images, create VMs, assign IAM roles, reserve addresses, or update Cloud
+DNS. Those deployment operations require an authenticated Google principal.
+
+For interactive local development, use one of these approaches:
+
+1. `gcloud auth login` for the Google Cloud CLI, plus
+   `gcloud auth application-default login` only when local libraries require
+   Application Default Credentials.
+2. Prefer service-account impersonation when deployment should use a dedicated
+   identity without downloading a long-lived key.
+3. If unattended local automation truly requires a service-account key, store
+   it outside Git under `.credentials/`, point
+   `GOOGLE_APPLICATION_CREDENTIALS` to it, scope its IAM roles narrowly, and
+   rotate it. Never place the JSON key contents in `.env`.
+
+The deployment identity needs only the roles required for its enabled steps,
+typically permissions for Artifact Registry writes, Compute Engine
+administration or a narrower custom role, service-account use, and Cloud DNS
+changes when `GCP_MANAGE_DNS=true`. The VM runtime service account should be a
+different, less privileged identity with read access to its Artifact Registry
+images and only the runtime APIs it actually uses.
+
+### 3.8 First-time Google Cloud setup
+
+The operator must complete these steps once before automated deployments:
+
+1. Create or select a Google Cloud project with billing enabled.
+2. Install the Google Cloud CLI and Docker on the development Macintosh.
+3. Authenticate `gcloud`, select `GCP_PROJECT_ID`, and set the configured region
+   and zone.
+4. Enable Compute Engine, Artifact Registry, Cloud DNS when used, IAM, and any
+   other APIs explicitly required by the deployment.
+5. Create the Docker-format Artifact Registry repository named by
+   `GCP_ARTIFACT_REPOSITORY` in `GCP_REGION`.
+6. Create a narrowly scoped deployment service account and a separate VM
+   runtime service account; grant only the required roles.
+7. Configure Docker authentication for the regional Artifact Registry host by
+   running `gcloud auth configure-docker` for that host.
+8. Reserve the regional static external IPv4 address named by
+   `GCP_STATIC_IP_NAME`.
+9. Create firewall rules that allow inbound TCP 80 and 443 to the VM's web tag.
+   Restrict SSH through OS Login, IAP, or a documented trusted source rather
+   than exposing unrestricted password SSH.
+10. If the domain is managed by Cloud DNS, identify or create the managed zone
+    named by `GCP_DNS_ZONE`. If DNS is hosted elsewhere, set
+    `GCP_MANAGE_DNS=false` and plan to install the printed A record manually.
+11. Copy `example.env` to `.env` and fill in local values. Do not commit `.env`.
+
+### 3.9 Automated local-to-VM deployment workflow
+
+Provide a checked-in deployment command, such as `bin/deploy-gcp`, with
+idempotent subcommands. The implementation language may be shell or a small
+Laravel command, but it must show commands before executing them, stop on
+errors, validate required variables, and never print secrets.
+
+The workflow shall perform these operations:
+
+1. **Preflight:** Load `.env`; validate `gcloud`, Docker, project, region, zone,
+   authenticated account, required APIs, IAM access, clean image tag, and DNS
+   configuration. Explicitly reject using `GOOGLE_API_KEY` as deployment
+   authentication.
+2. **Build and test:** Run the complete test suite and build production Docker
+   images with locally bundled frontend assets. Use an immutable source commit
+   or release identifier for `DEPLOY_IMAGE_TAG`; do not deploy an ambiguous
+   `latest` tag as the only reference.
+3. **Push:** Tag images using the Artifact Registry form
+   `REGION-docker.pkg.dev/PROJECT/REPOSITORY/IMAGE:TAG`, authenticate Docker
+   through `gcloud`, and push them from the local development machine.
+4. **Provision:** Reuse or create the reserved static IP, firewall rule, runtime
+   service account, persistent disk, and VM named in `.env`. VM creation shall
+   use the configured zone, machine type, supported Debian image family,
+   persistent boot-disk size, runtime service account, and web network tag.
+5. **Bootstrap:** Install Docker Engine and the Compose plugin if absent, create
+   application directories, attach/mount persistent storage, authenticate the
+   VM to Artifact Registry through its attached service account, and install no
+   application source dependencies at request time.
+6. **Configure:** Render a production-only environment file and Compose
+   override from explicit templates. Transfer them securely to the VM without
+   transferring the local `.env` or deployment credentials.
+7. **Deploy:** Pull the immutable image tags, run database migrations with a
+   documented rollback/backup checkpoint, start or update Apache/Laravel,
+   PostgreSQL, workers, scheduler, and unmodified Shlink, and remove obsolete
+   containers only after health checks pass.
+8. **DNS:** Read the reserved IP. When `GCP_MANAGE_DNS=true`, use a Cloud DNS
+   transaction to add or replace the configured A record for
+   `DEPLOY_HOSTNAME`. When DNS is external, print the exact A record and stop
+   short of claiming DNS is configured.
+9. **TLS:** Obtain or renew HTTPS certificates for the configured hostname using
+   the selected Apache-compatible ACME procedure after DNS resolves. Certificate
+   state must live on persistent storage and be included in restoration plans.
+10. **Verify:** Check DNS, TLS, Laravel health/readiness, local static assets,
+    Shlink resolution, queue execution, scheduler status, and database access.
+    Fail the deployment if any required check fails.
+11. **Record:** Write non-secret deployment output—project, zone, VM, image
+    digest, commit, reserved IP, and timestamp—to ignored `.deployment/` state
+    and to the server's audit/deployment log.
+
+The provision and deployment paths must be safe to rerun. Existing resources
+with matching configured names shall be updated or verified, not duplicated.
+Destructive replacement of a VM, disk, database, static IP, or DNS record must
+require an explicit flag and a fresh backup.
+
+### 3.10 DNS behavior
+
+Automatic hostname attachment is possible only when the configured DNS zone is
+managed by the authenticated Google Cloud project. Cloud DNS changes shall use
+transactional record updates: start a transaction, remove the old A record when
+present, add the new A record with the configured TTL, and execute the
+transaction. The deployment must verify the resulting authoritative and public
+DNS answers before requesting TLS.
+
+If the domain uses another DNS host or registrar, the deployment cannot update
+it merely because a Google API key is present. It shall output the required
+record using `DEPLOY_HOSTNAME` and the reserved IP, then wait for the operator
+to update DNS and rerun verification.
+
 ## 4. Phase 0 — Engineering Foundation
 
 ### 4.1 Goal
@@ -166,6 +302,8 @@ features accumulate.
 - Document local setup, test execution, database reset, and backup/restore.
 - Document provisioning a small Compute Engine VM, attaching persistent
   storage, configuring the static IP and HTTPS, and restoring a complete stack.
+- Add idempotent local deployment commands for preflight, build/push,
+  provisioning, configuration, deployment, DNS, TLS, and verification.
 
 ### 4.3 MVP at phase end
 
@@ -191,6 +329,12 @@ same backend.
 - Backup and restore smoke test recovers seeded PostgreSQL data.
 - A clean replacement-VM exercise restores PostgreSQL, Shlink mappings,
   Laravel configuration, and locally hosted assets from off-VM backups.
+- Deployment preflight rejects missing principal authentication even when
+  `GOOGLE_API_KEY` is configured.
+- Repeating provisioning and deployment with unchanged inputs creates no
+  duplicate VM, address, disk, firewall, DNS, or Artifact Registry resources.
+- A staging deployment pushes an immutable image from the development machine,
+  updates the VM, configures or reports DNS, and passes HTTPS health checks.
 
 ### 4.5 Exit demonstration
 

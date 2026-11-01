@@ -4,7 +4,7 @@
 **Status:** Exploratory / requirements gathering  
 **Clients:** iPhone and Macintosh applications (Swift / SwiftUI), plus a durable web interface
 **Backend:** Laravel (PHP), PostgreSQL
-**Selected URL shortener:** Shlink (PHP), initially on `ft1.us` or another owner-controlled domain  
+**Selected URL shortener:** Shlink (PHP), on the owner-controlled domain configured by `SHLINK_DOMAIN`
 **Storage targets:** Google Drive, Dropbox, Amazon S3; extensible to other providers
 **Collaborative metadata targets:** Google Drive documents, Microsoft Office documents, Etherpad, and other URL-addressable resources
 
@@ -94,7 +94,7 @@ Exceptional takedown or removal procedures may be needed for illegal, abusive, o
 
 The iPhone and Macintosh applications and web interface shall accept:
 
-- QR codes containing a managed Shlink URL, e.g., `https://ft1.us/a7K2`.
+- QR codes containing a managed Shlink URL, e.g., `https://${SHLINK_DOMAIN}/a7K2`.
 - QR codes containing any other URL, e.g., `https://google.com`.
 - QR codes containing arbitrary text, e.g., `ABC123`.
 - Manually entered URLs or text identifiers.
@@ -176,7 +176,7 @@ The external resource may be a Google Doc, Google Sheet, Google Slides presentat
 
 ### 4.1 Selected shortener
 
-Use **Shlink**, the self-hosted PHP short-URL service and short-code controller, with an initial domain of `ft1.us` or another owner-controlled short domain. Each managed physical QR code should encode a complete Shlink URL containing its corresponding short code, for example `https://ft1.us/a7K2`. The application/backend should support multiple recognized Shlink instances and custom domains. An independent operator should be able to deploy their own instance.
+Use **Shlink**, the self-hosted PHP short-URL service and short-code controller, with an owner-controlled short domain supplied by `SHLINK_DOMAIN`. Each managed physical QR code should encode a complete Shlink URL containing its corresponding short code, for example `https://${SHLINK_DOMAIN}/a7K2`. The application/backend should support multiple recognized Shlink instances and custom domains. An independent operator should be able to deploy their own instance.
 
 Integrate with an unmodified upstream Shlink deployment through its documented configuration and REST API. Do not fork, patch, or add project-specific geolocation behavior to the Shlink codebase. Shlink's responsibility ends after resolving the stable short URL to this project's landing-page URL. The landing-page client and application API are responsible for requesting location, evaluating presentation rules, and composing the response.
 
@@ -186,10 +186,10 @@ The owner of a managed short link shall be able to change its destination withou
 
 | Time | Short URL | Destination |
 |---|---|---|
-| Initially | `https://ft1.us/a7K2` | Public Dropbox landing page |
-| Later | `https://ft1.us/a7K2` | Google Drive document containing object metadata |
-| Next | `https://ft1.us/a7K2` | Microsoft Office document or Etherpad pad |
-| Future | `https://ft1.us/a7K2` | Replacement archive landing page |
+| Initially | `https://${SHLINK_DOMAIN}/a7K2` | Public Dropbox landing page |
+| Later | `https://${SHLINK_DOMAIN}/a7K2` | Google Drive document containing object metadata |
+| Next | `https://${SHLINK_DOMAIN}/a7K2` | Microsoft Office document or Etherpad pad |
+| Future | `https://${SHLINK_DOMAIN}/a7K2` | Replacement archive landing page |
 
 Use a **temporary HTTP redirect, normally 302**, rather than permanent 301/308 redirects. Configure appropriate cache controls (preferably `Cache-Control: no-store`) to reduce stale redirects. A 307 redirect is also temporary but method-preserving and is not required for ordinary QR-triggered GET requests.
 

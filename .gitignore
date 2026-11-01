@@ -60,3 +60,13 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Local environment configuration and credentials
+.env
+.env.*
+!example.env
+.credentials/
+gcp-service-account*.json
+
+# Local deployment state
+.deployment/
