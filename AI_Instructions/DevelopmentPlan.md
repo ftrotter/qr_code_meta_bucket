@@ -8,9 +8,10 @@ demonstrated and evaluated independently. A phase is complete only when its
 automated tests, end-to-end demonstration, documentation, and exit criteria
 pass.
 
-The sequence deliberately delivers the browser continuity path first. Native
-applications and advanced provider automation build on the same public URLs
-and Laravel API rather than becoming prerequisites for archive access.
+The sequence deliberately completes and stabilizes the browser application
+before native development begins. The iPhone and macOS applications are built
+in Phase 7 against the tested public URLs and versioned Laravel API rather than
+becoming prerequisites for archive access or forcing premature API stability.
 
 ## 2. Selected Technology Baseline
 
@@ -148,8 +149,9 @@ must never be used in automated tests.
   in the untracked `.env` file.
 - Commit `example.env` with safe example values and descriptions, but no working
   credentials or private keys.
-- Keep the production hostname out of source code, Compose files, scripts, and
-  documentation examples. Read it from `DEPLOY_HOSTNAME` or `SHLINK_DOMAIN`.
+- Keep production hostnames out of source code, Compose files, scripts, and
+  documentation examples. Read the Laravel host from `APP_HOSTNAME` and the
+  short-link host from `SHLINK_HOSTNAME` or `SHLINK_DOMAIN`.
 - Deployment scripts may load `.env` locally but must never copy the entire
   development `.env` to the VM. Generate a least-privilege production
   environment file containing only values required by deployed services.
@@ -205,10 +207,21 @@ The operator must complete these steps once before automated deployments:
 9. Create firewall rules that allow inbound TCP 80 and 443 to the VM's web tag.
    Restrict SSH through OS Login, IAP, or a documented trusted source rather
    than exposing unrestricted password SSH.
-10. If the domain is managed by Cloud DNS, identify or create the managed zone
-    named by `GCP_DNS_ZONE`. If DNS is hosted elsewhere, set
-    `GCP_MANAGE_DNS=false` and plan to install the printed A record manually.
-11. Copy `example.env` to `.env` and fill in local values. Do not commit `.env`.
+10. Create the public Cloud DNS managed zone named by `GCP_DNS_ZONE` for the
+    fully qualified zone in `GCP_DNS_DOMAIN` if it does not already exist.
+11. Read the managed zone's assigned authoritative nameservers. At the domain
+    registrar, replace the domain's current nameservers with all of the Google
+    nameservers exactly as assigned. This registrar delegation is the one
+    unavoidable manual DNS step and cannot be performed by the Cloud DNS API
+    before Google is authoritative for the domain.
+12. Before changing nameservers, reproduce any existing DNS records that must
+    survive in the Cloud DNS zone, especially MX, TXT, CAA, verification, and
+    existing service records. Nameserver delegation moves authority for the
+    entire zone; omitted records stop resolving after propagation.
+13. Wait until public NS queries return the assigned Google nameservers. After
+    that one-time delegation, set `GCP_MANAGE_DNS=true`; this codebase can then
+    manage its application and Shlink records through Cloud DNS.
+14. Copy `example.env` to `.env` and fill in local values. Do not commit `.env`.
 
 ### 3.9 Automated local-to-VM deployment workflow
 
@@ -246,16 +259,23 @@ The workflow shall perform these operations:
    PostgreSQL, workers, scheduler, and unmodified Shlink, and remove obsolete
    containers only after health checks pass.
 8. **DNS:** Read the reserved IP. When `GCP_MANAGE_DNS=true`, use a Cloud DNS
-   transaction to add or replace the configured A record for
-   `DEPLOY_HOSTNAME`. When DNS is external, print the exact A record and stop
-   short of claiming DNS is configured.
-9. **TLS:** Obtain or renew HTTPS certificates for the configured hostname using
-   the selected Apache-compatible ACME procedure after DNS resolves. Certificate
-   state must live on persistent storage and be included in restoration plans.
-10. **Verify:** Check DNS, TLS, Laravel health/readiness, local static assets,
+   transaction to add or replace A records for both `APP_HOSTNAME` and
+   `SHLINK_HOSTNAME`, pointing both names to the same initial static IP. When
+   DNS is external, print both exact A records and stop short of claiming DNS is
+   configured.
+9. **Apache routing:** Render two name-based Apache virtual hosts. Route
+   `APP_HOSTNAME` to Laravel and `SHLINK_HOSTNAME` to the unmodified Shlink
+   service. Requests with an unrecognized Host header must not silently route
+   to either production application.
+10. **TLS:** Obtain or renew certificates covering both configured hostnames
+    using the selected Apache-compatible ACME procedure after DNS resolves.
+    Certificate state must live on persistent storage and be included in
+    restoration plans. Test automatic renewal with `certbot renew --dry-run`.
+11. **Verify:** Check authoritative and public DNS, TLS for both hosts, Laravel
+    health/readiness, local static assets,
     Shlink resolution, queue execution, scheduler status, and database access.
     Fail the deployment if any required check fails.
-11. **Record:** Write non-secret deployment output—project, zone, VM, image
+12. **Record:** Write non-secret deployment output—project, zone, VM, image
     digest, commit, reserved IP, and timestamp—to ignored `.deployment/` state
     and to the server's audit/deployment log.
 
@@ -273,10 +293,41 @@ present, add the new A record with the configured TTL, and execute the
 transaction. The deployment must verify the resulting authoritative and public
 DNS answers before requesting TLS.
 
+For the initial single-VM deployment, create these records from environment
+configuration:
+
+- An A record for `APP_HOSTNAME` pointing to the reserved static IPv4 address.
+- An A record for `SHLINK_HOSTNAME` pointing to the same reserved address.
+
+Do not create a wildcard record unless a later requirement justifies it. Do not
+change unrelated zone records. DNS automation must inspect the transaction and
+show the proposed additions/removals before execution.
+
 If the domain uses another DNS host or registrar, the deployment cannot update
 it merely because a Google API key is present. It shall output the required
-record using `DEPLOY_HOSTNAME` and the reserved IP, then wait for the operator
-to update DNS and rerun verification.
+records using `APP_HOSTNAME`, `SHLINK_HOSTNAME`, and the reserved IP, then wait
+for the operator to update DNS and rerun verification.
+
+### 3.11 What the domain owner must do
+
+The intended steady state is full-zone delegation to Google Cloud DNS. The
+domain owner performs these actions:
+
+1. Confirm access to the domain registrar and preserve/export the current zone.
+2. Run the codebase's DNS bootstrap command to create or inspect the Cloud DNS
+   public zone and print its assigned nameservers.
+3. Copy all required existing records into Cloud DNS and verify the proposed
+   zone before delegation.
+4. At the registrar, replace the authoritative nameserver set with the complete
+   Google-assigned set. Do not add the Google nameservers alongside unrelated
+   old nameservers.
+5. Wait for delegation propagation and verify public NS responses.
+6. Rerun deployment. From then on, the codebase manages its two A records and
+   can manage later project records through the authenticated Cloud DNS API.
+
+Domain registration, renewal, registrar account security, and the initial
+nameserver change remain outside this codebase. The registrar should use strong
+account security, renewal reminders, and registry lock where available.
 
 ## 4. Phase 0 — Engineering Foundation
 
@@ -297,8 +348,6 @@ features accumulate.
   dependency and secret audits.
 - Add a local JavaScript build with pinned dependencies, content-hashed output,
   and no runtime CDN references.
-- Create the shared Swift package and empty iPhone/macOS SwiftUI application
-  shells that can call the health endpoint.
 - Document local setup, test execution, database reset, and backup/restore.
 - Document provisioning a small Compute Engine VM, attaching persistent
   storage, configuring the static IP and HTTPS, and restoring a complete stack.
@@ -309,8 +358,7 @@ features accumulate.
 
 A developer can clone the repository, start the complete local stack with one
 documented command, open the Laravel status page, call the versioned health
-API, open both Apple application shells, and verify their connection to the
-same backend.
+API, and deploy the same tested server image to the configured staging VM.
 
 ### 4.4 Required tests
 
@@ -325,7 +373,6 @@ same backend.
   non-owner-controlled origin.
 - A clean production build succeeds from the lockfile and serves all scripts
   locally after package-network access is disabled.
-- iPhone and macOS unit tests decode the health response.
 - Backup and restore smoke test recovers seeded PostgreSQL data.
 - A clean replacement-VM exercise restores PostgreSQL, Shlink mappings,
   Laravel configuration, and locally hosted assets from off-VM backups.
@@ -342,7 +389,7 @@ same backend.
 2. Show Apache/Laravel, PostgreSQL, queue worker, scheduler, and Shlink as
    healthy.
 3. Run all automated tests.
-4. Launch the iPhone simulator and macOS app and display backend health.
+4. Deploy the tested image to staging and verify both configured HTTPS hosts.
 
 ## 5. Phase 1 — Browser-First QR Bucket MVP
 
@@ -394,12 +441,12 @@ Use `Family Photos: 1980–1989` and one payload longer than 255 characters to
 create two buckets. Upload colliding filenames, scan each generated QR code
 with an ordinary camera, and show the public files, stable names, and manifests.
 
-## 6. Phase 2 — Durable Shlink URLs and SwiftUI Access MVP
+## 6. Phase 2 — Durable Shlink URLs and Browser Routing MVP
 
 ### 6.1 Goal
 
 Replace phase-one Laravel URLs in newly generated QR codes with stable Shlink
-URLs and deliver useful iPhone and Macintosh clients.
+URLs while preserving a complete browser-only workflow.
 
 ### 6.2 Scope
 
@@ -410,20 +457,15 @@ URLs and deliver useful iPhone and Macintosh clients.
 - Generate SVG/PNG QR artwork containing the complete Shlink URL plus
   human-readable URL and short code.
 - Add fabrication guidance for metal, weather-resistant media, and resin.
-- Implement Swift API models and authenticated session handling.
-- On iPhone, scan QR codes and open matching buckets.
-- On macOS, support camera scanning where available, QR-image/clipboard import,
-  and manual URL or short-code entry.
-- In both native clients, browse public bucket resources and hand off downloads
-  or provider URLs appropriately.
 - Preserve the full browser experience when no native application is present.
+- Configure and verify separate Apache virtual hosts for the application and
+  Shlink using the environment-provided hostnames.
 
 ### 6.3 MVP at phase end
 
 A Shlink QR code can be printed, scanned with an ordinary camera, and resolved
-to the public Laravel bucket page. The same code opens the bucket from iPhone
-and macOS clients, and an owner can change its Laravel destination without
-reprinting the QR marker.
+through the Shlink host to the public Laravel bucket page. An owner can change
+its Laravel destination without reprinting the QR marker.
 
 ### 6.4 Required tests
 
@@ -431,16 +473,16 @@ reprinting the QR marker.
 - Laravel never exposes the Shlink API key to browser or Swift clients.
 - Redirect changes retain history and use temporary redirect behavior.
 - QR SVG has a quiet zone, configured error correction, and readable caption.
-- iPhone scanner tests parse managed and unrelated QR payloads.
-- macOS tests cover imported images, clipboard images, and manual entry.
-- Browser resolution works with both native applications uninstalled.
+- Browser resolution works without any native application installed.
+- Host-routing tests prove the application host serves Laravel and the
+  short-link host serves Shlink without cross-routing unknown Host headers.
 - End-to-end test changes a short-code destination and reuses the original QR.
 
 ### 6.5 Exit demonstration
 
-Print one QR code, open it through an ordinary camera, iPhone app, Mac image
-import, and manual short-code entry. Change its destination in Laravel and show
-that the unchanged printed marker reaches the new page.
+Print one QR code and open it through an ordinary phone camera and a desktop
+browser. Change its destination in Laravel and show that the unchanged printed
+marker reaches the new page.
 
 ## 7. Phase 3 — Accounts, Collaboration, and Metadata MVP
 
@@ -458,7 +500,7 @@ public and provider access control provider-native.
 - Support zero or one primary metadata URL with change history and observed
   accessibility status.
 - Support ordered unconditional display links.
-- Add equivalent owner/contributor workflows to web, iPhone, and macOS.
+- Complete owner and contributor workflows in the responsive web interface.
 - Add public landing-page presentation for metadata, data resources, and links.
 - Ensure Google, Microsoft, Etherpad, and other resources enforce their own
   authentication; Laravel must not proxy around provider permissions.
@@ -483,7 +525,7 @@ file. Anonymous visitors can still read public content without an account.
 - Private provider URLs remain private and are not proxied by Laravel.
 - Manifest and logs contain no session tokens, magic tokens, or provider
   credentials.
-- Cross-client contract tests verify equivalent account and bucket behavior.
+- API contract tests freeze the browser-used behavior for later native clients.
 
 ### 7.5 Exit demonstration
 
@@ -513,15 +555,14 @@ integration and the credential/job architecture required for later mirroring.
 - Calculate source SHA-256 and verify destination copies using the strongest
   trustworthy provider mechanism.
 - Add progress, retry, blocked-credential, and specific failure states.
-- Support Mac drag-and-drop/folder selection and iPhone multi-file upload.
-- Reconnect clients to server-side jobs after sleep, termination, or network
-  interruption.
+- Support browser multi-file upload and reconnection to server-side jobs after
+  page closure, browser restart, or network interruption.
 
 ### 8.3 MVP at phase end
 
 An owner can connect one real provider, create the stable per-QR provider
-space, upload one hundred images from web or Mac, close the client, and later
-see every object either verified or reported with a specific retryable status.
+space, upload one hundred images from the web interface, close the browser, and
+later see every object either verified or reported with a retryable status.
 
 ### 8.4 Required tests
 
@@ -538,10 +579,9 @@ see every object either verified or reported with a specific retryable status.
 
 ### 8.5 Exit demonstration
 
-Connect a staging provider account, drag a folder containing 100 images into
-the Mac application, close it during transfer, and reopen it to show verified
-completion. Revoke the provider credential, show a blocked job, reconnect, and
-resume it.
+Connect a staging provider account, select 100 images in the web interface,
+close it during transfer, and reopen it to show verified completion. Revoke the
+provider credential, show a blocked job, reconnect, and resume it.
 
 ## 9. Phase 5 — Multi-Provider Replication and Migration MVP
 
@@ -605,7 +645,6 @@ without weakening the stable archive or treating location as security.
 - Add ordered display links with optional circular geofences.
 - Request precise browser location only after an explanation and explicit
   permission through the HTTPS Geolocation API.
-- Add equivalent Core Location behavior to iPhone and macOS where available.
 - Keep metadata URL and provider-backed resources unchanged at every location.
 - Provide deterministic no-location behavior and user-initiated retry.
 - Avoid retaining precise viewer coordinates by default.
@@ -620,13 +659,14 @@ without weakening the stable archive or treating location as security.
 ### 10.3 MVP at phase end
 
 The same QR code displays ordinary links everywhere and an additional test link
-inside a configured Times Square geofence, with matching browser and SwiftUI
-behavior. Operators can run health checks, restore the service from backups,
-and migrate a fixture archive to a newly added adapter.
+inside a configured Times Square geofence in the browser. Operators can run
+health checks, restore the service from backups, and migrate a fixture archive
+to a newly added adapter.
 
 ### 10.4 Required tests
 
-- Browser and Swift geofence golden tests use identical coordinate fixtures.
+- Browser geofence tests use reusable coordinate fixtures intended for later
+  Swift contract tests.
 - Permission denied, timeout, inaccurate location, matching, and nonmatching
   cases render the required content.
 - Metadata URL and provider resources remain invariant across all locations.
@@ -650,7 +690,60 @@ code. Then simulate an unavailable provider, restore an alternate replica,
 recover the stack from backups, and mirror the archive into the fourth-provider
 adapter while the original QR code continues to work.
 
-## 11. Deferred Work After Phase 6
+## 11. Phase 7 — iPhone and macOS Native Applications MVP
+
+### 11.1 Goal
+
+Build native Apple clients only after the browser application, domain model,
+authentication, provider workflows, and versioned API have passed their MVPs.
+
+### 11.2 Scope
+
+- Create a shared Swift package for API models, authentication, bucket logic,
+  folder-name golden vectors, geofence rules, and transfer-job status.
+- Build SwiftUI iPhone and macOS applications with platform-appropriate views.
+- Support the same owner, contributor, metadata, display-link, provider,
+  upload, mirroring, manifest, and Shlink workflows available on the web.
+- On iPhone, scan QR codes through native camera APIs and use native file/photo
+  pickers.
+- On macOS, support available cameras, QR-image and clipboard import, manual
+  URL/short-code entry, drag-and-drop, and folder selection.
+- Implement native geolocation with the same rule fixtures and no-location
+  behavior as the browser.
+- Store device credentials in Keychain and never embed deployment/provider
+  administrative secrets.
+- Reconnect to durable backend jobs after suspension, termination, sleep, or
+  network interruption.
+- Preserve browser operation as the complete continuity path.
+
+### 11.3 MVP at phase end
+
+An owner can manage the same production bucket from the browser, iPhone, and
+Macintosh applications. An ordinary camera still reaches the browser when no
+app is installed, and all three clients show equivalent authorized resources,
+location-conditioned links, and transfer status.
+
+### 11.4 Required tests
+
+- XCTest verifies API decoding, authentication state, folder-name vectors,
+  geofence fixtures, and transfer-state handling.
+- XCUITest covers iPhone scanning and core owner/contributor workflows.
+- macOS UI tests cover image/clipboard/manual QR input, drag-and-drop, and large
+  transfer reconnection.
+- Contract tests compare browser and Swift results for the same account,
+  bucket, coordinates, permissions, and transfer job.
+- Keychain and logging tests confirm secrets and tokens are not exposed.
+- Compatibility tests verify a QR URL works in browser-only, iPhone, and macOS
+  paths without changing the printed code.
+
+### 11.5 Exit demonstration
+
+Create and configure a bucket in the web interface, scan it on iPhone, import
+the QR image on macOS, upload files from both native clients, observe one
+durable transfer from all clients, and uninstall the apps to prove the same QR
+still opens the complete browser experience.
+
+## 12. Deferred Work After Phase 7
 
 The following should not block the phased MVPs unless an earlier implementation
 decision makes them necessary:
@@ -664,7 +757,7 @@ decision makes them necessary:
 - Provider-content indexing or previews beyond durable URL linking.
 - Cross-instance bucket discovery.
 
-## 12. Release and Feedback Cadence
+## 13. Release and Feedback Cadence
 
 At the end of each phase:
 

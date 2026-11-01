@@ -178,6 +178,8 @@ The external resource may be a Google Doc, Google Sheet, Google Slides presentat
 
 Use **Shlink**, the self-hosted PHP short-URL service and short-code controller, with an owner-controlled short domain supplied by `SHLINK_DOMAIN`. Each managed physical QR code should encode a complete Shlink URL containing its corresponding short code, for example `https://${SHLINK_DOMAIN}/a7K2`. The application/backend should support multiple recognized Shlink instances and custom domains. An independent operator should be able to deploy their own instance.
 
+The Laravel application hostname and Shlink hostname are configured separately through `APP_HOSTNAME` and `SHLINK_HOSTNAME`. They may resolve to the same initial VM and static IP while Apache routes each hostname to its corresponding service. Permanent QR codes use only `SHLINK_HOSTNAME`; Shlink redirects them to bucket pages under `APP_HOSTNAME`.
+
 Integrate with an unmodified upstream Shlink deployment through its documented configuration and REST API. Do not fork, patch, or add project-specific geolocation behavior to the Shlink codebase. Shlink's responsibility ends after resolving the stable short URL to this project's landing-page URL. The landing-page client and application API are responsible for requesting location, evaluating presentation rules, and composing the response.
 
 ### 4.2 Mutable destination
@@ -601,9 +603,9 @@ Support a configurable registry/list of recognized Shlink instances in the iPhon
 
 ## 14. Suggested Delivery Phases
 
-### Phase 1 — Basic archive and linked metadata
+### Phase 1 — Browser application and linked metadata
 
-Shared Swift/SwiftUI iPhone and Macintosh clients; iPhone camera scanning; Macintosh camera scanning, QR-image import, and manual entry; responsive web interface; ordinary-camera QR resolution; arbitrary identifier lookup; Google sign-in plus universal email magic links; bucket creation; public landing page; authenticated web upload and management; one generic HTTPS metadata URL; arbitrary display links; direct or landing-page resolution; file upload with dot-separated collision naming; basic contributor invitation; Laravel API and PostgreSQL database.
+Responsive Laravel web interface; ordinary-camera QR resolution; arbitrary identifier lookup; Google sign-in plus universal email magic links; bucket creation; public landing page; authenticated web upload and management; one generic HTTPS metadata URL; arbitrary display links; direct or landing-page resolution; file upload with dot-separated collision naming; basic contributor invitation; Laravel API and PostgreSQL database.
 
 ### Phase 2 — Managed links
 
@@ -616,6 +618,10 @@ Microsoft and Apple sign-in; multiple verified emails per account; local PIN con
 ### Phase 4 — Preservation and independent operation
 
 Additional provider adapters; resumable cross-provider migration and reconciliation; checksum auditing; open manifests and full exports; recovery/restore tooling; manifest copies alongside files; documented self-hosting and migration.
+
+### Phase 5 — Native Apple clients
+
+Shared Swift/SwiftUI iPhone and Macintosh clients built against the stable versioned Laravel API; iPhone camera scanning; Macintosh camera scanning, QR-image/clipboard import, manual entry, drag-and-drop, and folder selection; native geolocation parity; durable transfer-job monitoring; browser continuity when native applications are unavailable.
 
 The phases are proposed implementation sequencing, not final scope commitments.
 
