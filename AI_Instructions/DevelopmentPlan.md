@@ -23,11 +23,12 @@ becoming prerequisites for archive access or forcing premature API stability.
 | Database | PostgreSQL |
 | Background work | Laravel queues with a durable production queue backend |
 | Scheduled work | Laravel scheduler |
-| Short URLs | Unmodified upstream Shlink, accessed through its REST API |
+| Short URLs | Unmodified upstream Shlink server |
+| Shlink administration | Self-hosted official Shlink web client |
 | Native clients | Shared Swift and SwiftUI code for iPhone and macOS |
 | Provider integrations | Laravel adapters for Drive, Dropbox, and S3 |
-| Initial production host | Small Google Compute Engine VM |
-| Deployment | Docker Compose for local and production stacks |
+| Shared development host | Small Google Compute Engine VM |
+| Deployment | Docker Compose on the Google VM |
 | Automated web testing | PHPUnit/Pest, Laravel HTTP tests, and browser tests |
 | Automated Apple testing | XCTest and XCUITest |
 | API contract | Versioned JSON API documented with OpenAPI |
@@ -70,22 +71,48 @@ Every phase must provide:
     all dependencies are pinned, and no browser code is fetched at runtime from
     a package registry, CDN, tag manager, or remote widget service.
 
-### 3.2 Testing environments
+### 3.2 Development and testing environments
 
-Maintain three environments:
+Use the public Google instance as the primary integration environment from the
+beginning. Do not require a locally hosted Laravel, Shlink, or PostgreSQL stack
+for ordinary development.
 
-- **Local:** Docker Compose, fake provider adapters, and deterministic fixtures.
-- **Continuous integration:** isolated PostgreSQL, fake adapters, Shlink test
-  instance, Laravel tests, and Swift tests where macOS runners are available.
-- **Staging:** real Shlink and sandbox/test accounts for each supported provider.
+- **Local Macintosh:** source editing, fast unit tests, static analysis,
+  dependency installation, locally hosted asset compilation, and Docker-image
+  builds.
+- **Continuous integration:** isolated automated tests with deterministic
+  fixtures and fake provider adapters. CI must not mutate the shared instance.
+- **Google development instance:** public DNS and HTTPS, Apache/Laravel,
+  PostgreSQL, Shlink, queue workers, scheduler, browser integration tests,
+  OAuth callbacks, and provider sandbox/test accounts.
+- **Production:** a separate Google VM and Compose project using the same tested
+  images and templates with production environment values. It has separate
+  databases, links, credentials, static IP, storage, and backups.
+
+Development and production may share the Google Cloud project, Cloud DNS zone,
+and Artifact Registry, but no mutable runtime state. Production deploys the
+exact image digest verified in development rather than rebuilding it.
 
 Provider contract tests must run against both a deterministic fake adapter and
-the provider's sandbox or dedicated staging account. Production credentials
-must never be used in automated tests.
+the provider's sandbox or dedicated development account. Real personal archives
+and production provider credentials must not be used in automated tests.
+
+The shared development instance is Internet-accessible and must use
+production-safe operational settings despite its development purpose:
+
+- `APP_DEBUG=false`.
+- Strong unique credentials.
+- HTTPS after initial certificate bootstrap.
+- No sample secrets in deployed configuration.
+- Regular backups and tested restoration.
+- Test or non-sensitive data until production readiness is declared.
+- Authentication and authorization enabled as soon as those features exist.
 
 ### 3.3 Architectural boundaries
 
 - Shlink remains an unmodified upstream deployment.
+- The official Shlink web client is self-hosted. It is separate from Shlink
+  server and consumes the pinned server's upstream `/rest/v3` API.
 - Laravel is served by Apache using a conventional PHP/Apache container. Do not
   introduce Nginx or a separate PHP-FPM proxy tier without a demonstrated need.
 - Laravel owns public landing pages, application authentication, authorization,
@@ -124,13 +151,19 @@ must never be used in automated tests.
 
 ### 3.5 Initial hosting and operations policy
 
-- Run the initial production system on one small Google Compute Engine VM with
+The detailed operator procedure is maintained in
+[`InitialCloudSetup.md`](../InitialCloudSetup.md).
+
+- Run the shared development system on one small Google Compute Engine VM with
   a persistent SSD and static IP address.
 - Run Apache/PHP, Laravel workers, the Laravel scheduler, PostgreSQL, and
   unmodified Shlink through Docker Compose on that VM.
 - Use the standard PHP Apache container pattern to keep Laravel deployment
   direct and familiar.
 - Serve all project-owned static assets through Apache from the deployed build.
+- Use the public Google instance for browser development and integration; do not
+  add `/etc/hosts`, local DNS, or locally trusted certificate requirements to
+  the normal workflow.
 - Keep database and service state on persistent storage and send encrypted
   backups off the VM.
 - Maintain at least one off-VM backup; prefer an additional copy outside the
@@ -149,11 +182,17 @@ must never be used in automated tests.
   in the untracked `.env` file.
 - Commit `example.env` with safe example values and descriptions, but no working
   credentials or private keys.
-- Keep production hostnames out of source code, Compose files, scripts, and
-  documentation examples. Read the Laravel host from `APP_HOSTNAME` and the
-  short-link host from `SHLINK_HOSTNAME` or `SHLINK_DOMAIN`.
+- Keep environment hostnames out of source code and Compose templates. Read the
+  Laravel host from `APP_HOSTNAME`, public redirect host from
+  `PUBLIC_SHORT_DOMAIN`, and Shlink administration host from
+  `SHLINK_WEB_HOSTNAME`.
+- Use `DEPLOY_ENVIRONMENT` and `COMPOSE_PROJECT_NAME` to select an isolated
+  environment. Never infer production from a branch name or hostname substring.
+- Require an explicit environment argument and confirmation for production.
+  Print the target VM, IP, hostnames, image digest, databases, and backup
+  destination before changing production.
 - Deployment scripts may load `.env` locally but must never copy the entire
-  development `.env` to the VM. Generate a least-privilege production
+  local deployment `.env` to the VM. Generate a least-privilege server
   environment file containing only values required by deployed services.
 - Treat `.env`, service-account key files, generated SSH material, and local
   deployment state as secrets or machine-local state and exclude them from Git.
@@ -223,7 +262,7 @@ The operator must complete these steps once before automated deployments:
     manage its application and Shlink records through Cloud DNS.
 14. Copy `example.env` to `.env` and fill in local values. Do not commit `.env`.
 
-### 3.9 Automated local-to-VM deployment workflow
+### 3.9 Automated local-to-VM development workflow
 
 Provide a checked-in deployment command, such as `bin/deploy-gcp`, with
 idempotent subcommands. The implementation language may be shell or a small
@@ -236,7 +275,7 @@ The workflow shall perform these operations:
    authenticated account, required APIs, IAM access, clean image tag, and DNS
    configuration. Explicitly reject using `GOOGLE_API_KEY` as deployment
    authentication.
-2. **Build and test:** Run the complete test suite and build production Docker
+2. **Build and test:** Run the complete test suite and build deployable Docker
    images with locally bundled frontend assets. Use an immutable source commit
    or release identifier for `DEPLOY_IMAGE_TAG`; do not deploy an ambiguous
    `latest` tag as the only reference.
@@ -251,29 +290,30 @@ The workflow shall perform these operations:
    application directories, attach/mount persistent storage, authenticate the
    VM to Artifact Registry through its attached service account, and install no
    application source dependencies at request time.
-6. **Configure:** Render a production-only environment file and Compose
+6. **Configure:** Render a server-only environment file and Compose
    override from explicit templates. Transfer them securely to the VM without
    transferring the local `.env` or deployment credentials.
 7. **Deploy:** Pull the immutable image tags, run database migrations with a
    documented rollback/backup checkpoint, start or update Apache/Laravel,
    PostgreSQL, workers, scheduler, and unmodified Shlink, and remove obsolete
-   containers only after health checks pass.
-8. **DNS:** Read the reserved IP. When `GCP_MANAGE_DNS=true`, use a Cloud DNS
-   transaction to add or replace A records for both `APP_HOSTNAME` and
-   `SHLINK_HOSTNAME`, pointing both names to the same initial static IP. When
-   DNS is external, print both exact A records and stop short of claiming DNS is
-   configured.
-9. **Apache routing:** Render two name-based Apache virtual hosts. Route
-   `APP_HOSTNAME` to Laravel and `SHLINK_HOSTNAME` to the unmodified Shlink
-   service. Requests with an unrecognized Host header must not silently route
-   to either production application.
-10. **TLS:** Obtain or renew certificates covering both configured hostnames
+   containers only after health checks pass. This is the normal development
+   loop, not an occasional production-release operation.
+8. **DNS:** Read the environment's reserved IP. When `GCP_MANAGE_DNS=true`, use
+   a Cloud DNS transaction to add or replace A records for `APP_HOSTNAME`,
+   `PUBLIC_SHORT_DOMAIN`, and `SHLINK_WEB_HOSTNAME`, all pointing to that
+   environment's static IP. When DNS is external, print all three records.
+9. **Apache routing:** Render three name-based Apache virtual hosts. Route
+   `APP_HOSTNAME` to Laravel, `PUBLIC_SHORT_DOMAIN` to Shlink server redirects,
+   and `SHLINK_WEB_HOSTNAME` to the official Shlink web client while proxying
+   `/rest/...` to Shlink server. Reject unrecognized Host headers.
+10. **TLS:** Obtain or renew certificates covering all three configured names
     using the selected Apache-compatible ACME procedure after DNS resolves.
     Certificate state must live on persistent storage and be included in
     restoration plans. Test automatic renewal with `certbot renew --dry-run`.
-11. **Verify:** Check authoritative and public DNS, TLS for both hosts, Laravel
-    health/readiness, local static assets,
-    Shlink resolution, queue execution, scheduler status, and database access.
+11. **Verify:** Check authoritative and public DNS, TLS for all three hosts,
+    Laravel health/readiness, local static assets, public Shlink resolution,
+    Shlink web-client access, `/rest/v3` API access, queue execution, scheduler
+    status, and database access.
     Fail the deployment if any required check fails.
 12. **Record:** Write non-secret deployment output—project, zone, VM, image
     digest, commit, reserved IP, and timestamp—to ignored `.deployment/` state
@@ -296,8 +336,9 @@ DNS answers before requesting TLS.
 For the initial single-VM deployment, create these records from environment
 configuration:
 
-- An A record for `APP_HOSTNAME` pointing to the reserved static IPv4 address.
-- An A record for `SHLINK_HOSTNAME` pointing to the same reserved address.
+- An A record for `APP_HOSTNAME` pointing to the environment's reserved IP.
+- An A record for `PUBLIC_SHORT_DOMAIN` pointing to the same reserved IP.
+- An A record for `SHLINK_WEB_HOSTNAME` pointing to the same reserved IP.
 
 Do not create a wildcard record unless a later requirement justifies it. Do not
 change unrelated zone records. DNS automation must inspect the transaction and
@@ -305,8 +346,8 @@ show the proposed additions/removals before execution.
 
 If the domain uses another DNS host or registrar, the deployment cannot update
 it merely because a Google API key is present. It shall output the required
-records using `APP_HOSTNAME`, `SHLINK_HOSTNAME`, and the reserved IP, then wait
-for the operator to update DNS and rerun verification.
+records using all three configured hostnames and the reserved IP, then wait for
+the operator to update DNS and rerun verification.
 
 ### 3.11 What the domain owner must do
 
@@ -356,9 +397,9 @@ features accumulate.
 
 ### 4.3 MVP at phase end
 
-A developer can clone the repository, start the complete local stack with one
-documented command, open the Laravel status page, call the versioned health
-API, and deploy the same tested server image to the configured staging VM.
+A developer can clone the repository, run local checks, build and push an
+immutable image, deploy it to the Google development VM, and verify the public
+Laravel and Shlink hosts over HTTPS.
 
 ### 4.4 Required tests
 
@@ -380,16 +421,16 @@ API, and deploy the same tested server image to the configured staging VM.
   `GOOGLE_API_KEY` is configured.
 - Repeating provisioning and deployment with unchanged inputs creates no
   duplicate VM, address, disk, firewall, DNS, or Artifact Registry resources.
-- A staging deployment pushes an immutable image from the development machine,
+- A development deployment pushes an immutable image from the local machine,
   updates the VM, configures or reports DNS, and passes HTTPS health checks.
 
 ### 4.5 Exit demonstration
 
-1. Start the local stack from a clean machine or clean environment.
-2. Show Apache/Laravel, PostgreSQL, queue worker, scheduler, and Shlink as
-   healthy.
-3. Run all automated tests.
-4. Deploy the tested image to staging and verify both configured HTTPS hosts.
+1. Run all local and CI-equivalent checks from a clean development checkout.
+2. Build and push an immutable image.
+3. Deploy it to the Google development instance.
+4. Show Apache/Laravel, PostgreSQL, queue worker, scheduler, and Shlink as
+   healthy through the public HTTPS hosts.
 
 ## 5. Phase 1 — Browser-First QR Bucket MVP
 

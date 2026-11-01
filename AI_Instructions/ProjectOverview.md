@@ -4,7 +4,7 @@
 **Status:** Exploratory / requirements gathering  
 **Clients:** iPhone and Macintosh applications (Swift / SwiftUI), plus a durable web interface
 **Backend:** Laravel (PHP), PostgreSQL
-**Selected URL shortener:** Shlink (PHP), on the owner-controlled domain configured by `SHLINK_DOMAIN`
+**Selected URL shortener:** Shlink (PHP), with public redirects on `PUBLIC_SHORT_DOMAIN` and the official web client on `SHLINK_WEB_HOSTNAME`
 **Storage targets:** Google Drive, Dropbox, Amazon S3; extensible to other providers
 **Collaborative metadata targets:** Google Drive documents, Microsoft Office documents, Etherpad, and other URL-addressable resources
 
@@ -94,7 +94,7 @@ Exceptional takedown or removal procedures may be needed for illegal, abusive, o
 
 The iPhone and Macintosh applications and web interface shall accept:
 
-- QR codes containing a managed Shlink URL, e.g., `https://${SHLINK_DOMAIN}/a7K2`.
+- QR codes containing a managed Shlink URL, e.g., `https://${PUBLIC_SHORT_DOMAIN}/a7K2`.
 - QR codes containing any other URL, e.g., `https://google.com`.
 - QR codes containing arbitrary text, e.g., `ABC123`.
 - Manually entered URLs or text identifiers.
@@ -176,9 +176,17 @@ The external resource may be a Google Doc, Google Sheet, Google Slides presentat
 
 ### 4.1 Selected shortener
 
-Use **Shlink**, the self-hosted PHP short-URL service and short-code controller, with an owner-controlled short domain supplied by `SHLINK_DOMAIN`. Each managed physical QR code should encode a complete Shlink URL containing its corresponding short code, for example `https://${SHLINK_DOMAIN}/a7K2`. The application/backend should support multiple recognized Shlink instances and custom domains. An independent operator should be able to deploy their own instance.
+Use **Shlink**, the self-hosted PHP short-URL server, with its `DEFAULT_DOMAIN` supplied by `SHLINK_DEFAULT_DOMAIN`. Each managed physical QR code encodes a complete public URL on `PUBLIC_SHORT_DOMAIN`, for example `https://${PUBLIC_SHORT_DOMAIN}/a7K2`. Shlink redirects that URL to a bucket page on `APP_HOSTNAME`.
 
-The Laravel application hostname and Shlink hostname are configured separately through `APP_HOSTNAME` and `SHLINK_HOSTNAME`. They may resolve to the same initial VM and static IP while Apache routes each hostname to its corresponding service. Permanent QR codes use only `SHLINK_HOSTNAME`; Shlink redirects them to bucket pages under `APP_HOSTNAME`.
+Shlink server and the official Shlink web client are separate upstream components. Configure three externally visible hostnames per environment:
+
+- `PUBLIC_SHORT_DOMAIN` routes public short-code requests to Shlink server.
+- `APP_HOSTNAME` routes to Laravel.
+- `SHLINK_WEB_HOSTNAME` serves the self-hosted official Shlink web client. Requests under `/rest/...` on this host reverse-proxy to that environment's Shlink server REST API so the web client can administer it.
+
+The upstream REST API is versioned under `/rest/v3` for the selected Shlink release; do not invent an `/api/v1` Shlink route. Pin compatible Shlink server and web-client versions and verify their documented API compatibility before upgrades.
+
+Development and production are fully independent deployments. Each has its own VM, Docker Compose project, static IP, persistent volumes, Laravel database, Shlink database, Shlink API key, short links, credentials, backups, and deployment state. They use the same pinned images and configuration templates with environment-specific values. Development links must never appear automatically in production, and production links must never be copied into development except through an explicit audited migration.
 
 Integrate with an unmodified upstream Shlink deployment through its documented configuration and REST API. Do not fork, patch, or add project-specific geolocation behavior to the Shlink codebase. Shlink's responsibility ends after resolving the stable short URL to this project's landing-page URL. The landing-page client and application API are responsible for requesting location, evaluating presentation rules, and composing the response.
 
@@ -188,10 +196,10 @@ The owner of a managed short link shall be able to change its destination withou
 
 | Time | Short URL | Destination |
 |---|---|---|
-| Initially | `https://${SHLINK_DOMAIN}/a7K2` | Public Dropbox landing page |
-| Later | `https://${SHLINK_DOMAIN}/a7K2` | Google Drive document containing object metadata |
-| Next | `https://${SHLINK_DOMAIN}/a7K2` | Microsoft Office document or Etherpad pad |
-| Future | `https://${SHLINK_DOMAIN}/a7K2` | Replacement archive landing page |
+| Initially | `https://${PUBLIC_SHORT_DOMAIN}/a7K2` | Public Dropbox landing page |
+| Later | `https://${PUBLIC_SHORT_DOMAIN}/a7K2` | Google Drive document containing object metadata |
+| Next | `https://${PUBLIC_SHORT_DOMAIN}/a7K2` | Microsoft Office document or Etherpad pad |
+| Future | `https://${PUBLIC_SHORT_DOMAIN}/a7K2` | Replacement archive landing page |
 
 Use a **temporary HTTP redirect, normally 302**, rather than permanent 301/308 redirects. Configure appropriate cache controls (preferably `Cache-Control: no-store`) to reduce stale redirects. A 307 redirect is also temporary but method-preserving and is not required for ordinary QR-triggered GET requests.
 
@@ -486,7 +494,8 @@ The deployed web system must retain enough functionality to operate the archive 
 | Web server | Apache HTTP Server using a conventional PHP/Apache deployment |
 | API / orchestration | Laravel / PHP |
 | Metadata database | PostgreSQL |
-| Short links | Shlink (PHP), via REST API |
+| Short redirects and REST API | Shlink server (PHP), unmodified upstream |
+| Shlink administration | Self-hosted official Shlink web client |
 | Identity | OIDC plus email magic links / codes |
 | Storage adapters | Google Drive, Dropbox, S3 |
 | Integration secrets | Backend-only encrypted credential store with rotation/revocation support |
@@ -494,7 +503,7 @@ The deployed web system must retain enough functionality to operate the archive 
 | Primary metadata URLs | Google Drive documents, Microsoft Office documents, Etherpad, generic HTTPS URLs |
 | Contextual links | Arbitrary URLs with optional geofence presentation rules |
 | Bucket and management pages | Responsive web frontend, TBD |
-| Initial hosting | Small Google Compute Engine VM |
+| Initial shared development host | Small Google Compute Engine VM |
 | Deployment | Docker Compose on one VM |
 
 Laravel/PHP and PostgreSQL are the selected backend implementation choices.
@@ -574,9 +583,9 @@ Document DNS/domain renewal, backup and restore, domain transfers, replacement l
 
 The system should support independent operators deploying their own instance and domain, rather than requiring all archives to be hosted by the original operator.
 
-### 13.1 Initial production deployment
+### 13.1 Initial shared development deployment
 
-The initial hosted deployment should use one small Google Compute Engine virtual machine with a persistent SSD and static IP address. Run the application through Docker Compose using familiar, independently replaceable services:
+The initial shared development deployment should use one small Google Compute Engine virtual machine with a persistent SSD and static IP address. Browser development and integration testing should use this public HTTPS deployment rather than requiring a local web stack. Run the application through Docker Compose using familiar, independently replaceable services:
 
 - Apache HTTP Server and PHP serving Laravel, using the standard PHP Apache container pattern rather than an Nginx-to-PHP-FPM proxy tier.
 - PostgreSQL for the initially small application database.
@@ -680,6 +689,10 @@ The phases are proposed implementation sequencing, not final scope commitments.
 51. A production browser session can render and operate every project-owned page without requesting JavaScript from a public CDN or third-party runtime host.
 52. Blocking all non-owner-controlled script origins does not prevent public bucket browsing, authentication initiation, administration, uploads, geolocation prompts, or transfer monitoring.
 53. Restoring the documented application backup restores every JavaScript asset required by the deployed web interface without downloading code from a package registry or CDN.
+54. Each environment routes its public short-link hostname to Shlink server, its application hostname to Laravel, and its Shlink administration hostname to the official Shlink web client with `/rest/v3` proxied to that environment's Shlink server.
+55. Development and production use separate VMs, static IPs, Compose projects, persistent storage, Laravel databases, Shlink databases, API keys, links, credentials, TLS state, backups, and deployment state.
+56. Production deploys the exact application and pinned Shlink image digests verified in development while applying production-only environment values.
+57. A short link created in development does not exist in production unless an authorized, explicit, audited migration creates it there.
 
 ## 16. Open Decisions
 
